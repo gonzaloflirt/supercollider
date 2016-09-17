@@ -48,6 +48,7 @@
 
 #include "SC_Lock.h"
 
+#include <ableton/Link.hpp>
 
 #include <boost/sync/semaphore.hpp>
 #include <boost/sync/support/std_chrono.hpp>
@@ -1381,6 +1382,367 @@ int prmonotonicClockTime(struct VMGlobals *g, int numArgsPushed)
 	return errNone;
 }
 
+
+// LinkClock
+
+
+class LinkClock
+{
+public:
+
+  LinkClock(
+    VMGlobals *globals,
+    PyrObject* object,
+    const double tempo,
+    const double quantum)
+    : pGlobals(globals)
+    , pPyrObject(object)
+    , mQuantum(quantum)
+  {
+    if (sNumLinkClocks == 0)
+    {
+      sLink = std::unique_ptr<ableton::Link>(new ableton::Link(tempo));
+      sLink->enable(true);
+    }
+    ++sNumLinkClocks;
+
+    pQueue = (PyrHeap*)slotRawObject(&pPyrObject->slots[0]);
+    pQueue->size = 1;
+    SetInt(&pQueue->count, 0);
+
+    thread thread(std::bind(&LinkClock::run, this));
+    mThread = std::move(thread);
+
+#ifdef __APPLE__
+    int machprio;
+    boolean_t timeshare;
+    GetStdThreadSchedule(pthread_mach_thread_np(
+      mThread.native_handle()), &machprio, &timeshare);
+
+    RescheduleStdThread(pthread_mach_thread_np(mThread.native_handle()), 10, false);
+
+    GetStdThreadSchedule(pthread_mach_thread_np(
+      mThread.native_handle()), &machprio, &timeshare);
+#endif // __APPLE__
+
+#ifdef __linux__
+    SC_LinuxSetRealtimePriority(mThread.native_handle(), 1);
+#endif // __linux__
+  }
+
+  ~LinkClock()
+  {
+    --sNumLinkClocks;
+    if (sNumLinkClocks == 0)
+    {
+      sLink = nullptr;
+    }
+  }
+
+  void run()
+  {
+    mCondition.wait(gLangMutex);
+
+    while (pQueue->size)
+    {
+      mMutex.lock();
+
+      const auto timeline = sLink->captureAppTimeline();
+      const auto micros = sLink->clock().micros();
+      auto beats = timeline.beatAtTime(micros, mQuantum);
+      auto eventBeats = pQueue->slots->u.f;
+//      const auto eventBeats = slotRawFloat(pQueue->slots);
+      printf("ccc %f %f\n", eventBeats, beats);
+
+      while (pQueue->size > 1 && eventBeats <= beats)
+      {
+        double delta;
+        PyrSlot task;
+
+        getheap(pGlobals, (PyrObject*)pQueue, &beats, &task);
+
+        if (isKindOfSlot(&task, class_thread)) {
+          SetNil(&slotRawThread(&task)->nextBeat);
+        }
+
+        slotCopy((++pGlobals->sp), &task);
+        SetFloat(++pGlobals->sp, beats);
+        SetFloat(++pGlobals->sp, static_cast<double>(micros.count()) * 1e-6);
+        ++pGlobals->sp;	SetObject(pGlobals->sp, pPyrObject);
+
+        runAwakeMessage(pGlobals);
+        long err = slotDoubleVal(&pGlobals->result, &delta);
+        if (!err) {
+          // add delta time and reschedule
+          schedAbs(beats + delta, &task);
+        }
+      }
+
+      mMutex.unlock();
+
+      if (pQueue->size ==1)
+      {
+        mCondition.wait(gLangMutex);
+      }
+      else
+      {
+        eventBeats = pQueue->slots->u.f;
+        const auto eventMicros = timeline.timeAtBeat(eventBeats, mQuantum);
+        const auto wait = eventMicros - sLink->clock().micros();
+        printf("wait %lld\n", wait.count());
+        std::this_thread::sleep_for(wait);
+      }
+
+//      std::this_thread::sleep_for(std::chrono::seconds(1));
+    }
+  }
+
+
+  void schedAbs(const double beats, PyrSlot* task)
+  {
+    std::lock_guard<std::mutex> lock(mMutex);
+
+    bool added = addheap(pGlobals, (PyrObject*)pQueue, beats, task);
+    if (!added)
+    {
+      post("scheduler queue is full.\n");
+    }
+    else
+    {
+      if (isKindOfSlot(task, class_thread)) {
+        SetFloat(&slotRawThread(task)->nextBeat, beats);
+      }
+    }
+    mCondition.notify_all();
+  }
+
+  double seconds() const
+  {
+    return static_cast<double>(sLink->clock().micros().count()) * 1e-6;
+  }
+
+  double beats() const
+  {
+    const auto timeline = sLink->captureAppTimeline();
+    const auto now = sLink->clock().micros();
+    return timeline.beatAtTime(now, mQuantum);
+  }
+
+  double beats2secs(const double beats) const
+  {
+    const auto timeline = sLink->captureAppTimeline();
+    const auto micros = timeline.timeAtBeat(beats, mQuantum);
+    return static_cast<double>(micros.count()) * 1e-6;
+  }
+
+  double secs2beats(const double secs) const
+  {
+    const auto micros = std::chrono::microseconds(llround(secs * 1e6));
+    const auto timeline = sLink->captureAppTimeline();
+    return timeline.beatAtTime(micros, mQuantum);
+  }
+
+  double beats2bars(const double beats) const
+  {
+    return 0; //TODO
+  }
+
+  double bars2beats(const double bars) const
+  {
+    return 0; //TODO
+  }
+
+  double timeToNextBeat()
+  {
+    const auto timeline = sLink->captureAppTimeline();
+    const auto now = sLink->clock().micros();
+    const auto nextBeat = ceil(timeline.beatAtTime(now, mQuantum));
+    const auto then = timeline.timeAtBeat(nextBeat, mQuantum);
+    return static_cast<double>((then-now).count()) * 1e-6;
+  }
+
+private:
+  VMGlobals* pGlobals;
+  PyrObject* pPyrObject;
+  PyrHeap* pQueue;
+
+  std::mutex mMutex;
+  std::condition_variable_any mCondition;
+  std::thread mThread;
+  double mQuantum;
+  static std::unique_ptr<ableton::Link> sLink;
+  static std::size_t sNumLinkClocks;
+};
+
+std::unique_ptr<ableton::Link> LinkClock::sLink = nullptr;
+std::size_t LinkClock::sNumLinkClocks = 0;
+
+inline int prLinkClock_New(struct VMGlobals *g, int numArgsPushed)
+{
+  PyrSlot *a = g->sp - 2;
+  PyrSlot *b = g->sp - 1;
+  PyrSlot *c = g->sp;
+
+  double tempo;
+  int err = slotDoubleVal(b, &tempo);
+  if (err) tempo = 120.;
+
+  double quantum;
+  err = slotDoubleVal(c, &quantum);
+  if (err) quantum = 4.;
+
+  LinkClock* clock = new LinkClock(g, slotRawObject(a), tempo, quantum);
+  SetPtr(slotRawObject(a)->slots+1, clock);
+  return errNone;
+}
+
+inline int prLinkClock_Free(struct VMGlobals *g, int numArgsPushed)
+{
+  PyrSlot *a = g->sp;
+  LinkClock *clock = (LinkClock*)slotRawPtr(&slotRawObject(a)->slots[1]);
+  if (!clock) return errNone;	// not running
+
+  SetNil(slotRawObject(a)->slots + 1);
+  delete clock;
+
+  return errNone;
+}
+
+inline int prLinkClock_SchedAbs(struct VMGlobals *g, int numArgsPushed)
+{
+  PyrSlot *a = g->sp - 2;
+  PyrSlot *b = g->sp - 1;
+  PyrSlot *c = g->sp;
+
+  LinkClock *clock = (LinkClock*)slotRawPtr(&slotRawObject(a)->slots[1]);
+  if (!clock) {
+    return errFailed;
+  }
+
+  double beats;
+  int err = slotDoubleVal(b, &beats) || (beats == dInfinity);
+  if (err) return errNone; // return nil OK, just don't schedule
+
+  clock->schedAbs(beats, c);
+
+  return errNone;
+}
+
+inline int prLinkClock_Seconds(struct VMGlobals *g, int numArgsPushed)
+{
+  PyrSlot *a = g->sp;
+
+  LinkClock *clock = (LinkClock*)slotRawPtr(&slotRawObject(a)->slots[1]);
+  if (!clock) {
+    return errFailed;
+  }
+
+  const auto seconds = clock->seconds();
+
+  SetFloat(a, seconds);
+  return errNone;
+}
+
+inline int prLinkClock_Beats(struct VMGlobals *g, int numArgsPushed)
+{
+  PyrSlot *a = g->sp;
+
+  LinkClock *clock = (LinkClock*)slotRawPtr(&slotRawObject(a)->slots[1]);
+  if (!clock) {
+    return errFailed;
+  }
+
+  const auto beats = clock->beats();
+
+  SetFloat(a, beats);
+  return errNone;
+}
+
+inline int prLinkClock_BeatsToSecs(struct VMGlobals *g, int numArgsPushed)
+{
+  PyrSlot *a = g->sp - 1;
+  PyrSlot *b = g->sp;
+
+  LinkClock *clock = (LinkClock*)slotRawPtr(&slotRawObject(a)->slots[1]);
+  if (!clock) return errFailed;
+
+  double beats;
+  int err = slotDoubleVal(b, &beats);
+  if (err) return errFailed;
+
+  SetFloat(a, clock->beats2secs(beats));
+
+  return errNone;
+}
+
+inline int prLinkClock_SecsToBeats(struct VMGlobals *g, int numArgsPushed)
+{
+  PyrSlot *a = g->sp - 1;
+  PyrSlot *b = g->sp;
+
+  LinkClock *clock = (LinkClock*)slotRawPtr(&slotRawObject(a)->slots[1]);
+  if (!clock) return errFailed;
+
+  double secs;
+  int err = slotDoubleVal(b, &secs);
+  if (err) return errFailed;
+
+  SetFloat(a, clock->secs2beats(secs));
+
+  return errNone;
+}
+
+inline int prLinkClock_BeatsToBars(struct VMGlobals *g, int numArgsPushed)
+{
+  PyrSlot *a = g->sp - 1;
+  PyrSlot *b = g->sp;
+
+  LinkClock *clock = (LinkClock*)slotRawPtr(&slotRawObject(a)->slots[1]);
+  if (!clock) return errFailed;
+
+  double beats;
+  int err = slotDoubleVal(b, &beats);
+  if (err) return errFailed;
+
+  SetFloat(a, clock->beats2bars(beats));
+
+  return errNone;
+}
+
+inline int prLinkClock_BarsToBeats(struct VMGlobals *g, int numArgsPushed)
+{
+  PyrSlot *a = g->sp - 1;
+  PyrSlot *b = g->sp;
+
+  LinkClock *clock = (LinkClock*)slotRawPtr(&slotRawObject(a)->slots[1]);
+  if (!clock) return errFailed;
+
+  double bars;
+  int err = slotDoubleVal(b, &bars);
+  if (err) return errFailed;
+
+  SetFloat(a, clock->bars2beats(bars));
+
+  return errNone;
+}
+
+inline int prLinkClock_TimeToNextBeat(struct VMGlobals *g, int numArgsPushed)
+{
+  PyrSlot *a = g->sp;
+
+  LinkClock *clock = (LinkClock*)slotRawPtr(&slotRawObject(a)->slots[1]);
+  if (!clock) {
+    return errFailed;
+  }
+
+  const auto secs = clock->timeToNextBeat();
+
+  SetFloat(a, secs);
+  return errNone;
+}
+
+
+
 void initSchedPrimitives()
 {
 	int base, index=0;
@@ -1410,4 +1772,16 @@ void initSchedPrimitives()
 
 	definePrimitive(base, index++, "_ElapsedTime", prElapsedTime, 1, 0);
     definePrimitive(base, index++, "_monotonicClockTime", prmonotonicClockTime, 1, 0);
+
+	definePrimitive(base, index++, "_LinkClock_New", prLinkClock_New, 3, 0);
+	definePrimitive(base, index++, "_LinkClock_Free", prLinkClock_Free, 1, 0);
+	definePrimitive(base, index++, "_LinkClock_SchedAbs", prLinkClock_SchedAbs, 3, 0);
+	definePrimitive(base, index++, "_LinkClock_Seconds", prLinkClock_Seconds, 1, 0);
+	definePrimitive(base, index++, "_LinkClock_Beats", prLinkClock_Beats, 1, 0);
+	definePrimitive(base, index++, "_LinkClock_Beats2Secs", prLinkClock_BeatsToSecs, 1, 1);
+	definePrimitive(base, index++, "_LinkClock_Secs2Beats", prLinkClock_SecsToBeats, 1, 1);
+	definePrimitive(base, index++, "_LinkClock_Beats2Bars", prLinkClock_BeatsToBars, 1, 1);
+	definePrimitive(base, index++, "_LinkClock_Bars2Beats", prLinkClock_BarsToBeats, 1, 1);
+	definePrimitive(base, index++, "_LinkClock_TimeToNextBeat", prLinkClock_TimeToNextBeat, 1, 0);
 }
+

@@ -393,3 +393,83 @@ elapsed time is whatever the system clock says it is right now. elapsed time is 
 
 	archiveAsCompileString { ^true }
 }
+
+LinkClock : Clock {
+
+  var <queue;
+
+  *new { arg tempo = 120, quantum = 4, queueSize = 256;
+      ^super.new.init(tempo, quantum, queueSize)
+  }
+
+  *initClass {
+      CmdPeriod.add(this);
+  }
+
+  *cmdPeriod {
+  }
+
+  init { arg tempo = 120, quantum = 4, queueSize = 256;
+    queue = Array.new(queueSize);
+    ^this.new(tempo, quantum);
+  }
+
+  new { arg tempo = 120, quantum = 4;
+    _LinkClock_New
+    ^this.primitiveFailed
+  }
+
+  play { arg task, quant = 1;
+      this.schedAbs(quant.nextTimeOnGrid(this), task)
+  }
+
+  sched { arg delta, task;
+    this.schedAbs(this.beats() + delta, task);
+  }
+
+  schedAbs{ arg beat, task;
+    _LinkClock_SchedAbs
+    ^this.primitiveFailed
+  }
+
+  seconds {
+    _LinkClock_Seconds
+    ^this.primitiveFailed
+  }
+
+  beats {
+    _LinkClock_Beats
+    ^this.primitiveFailed
+  }
+
+  beats2secs { | beats |
+    _LinkClock_Beats2Secs
+    ^this.primitiveFailed
+  }
+
+  secs2beats { | secs |
+    _LinkClock_Secs2Beats
+    ^this.primitiveFailed
+  }
+
+  beats2bars {
+    _LinkClock_Beats2Bars
+    ^this.primitiveFailed
+  }
+
+  bars2beats {
+    _LinkClock_Bars2Beats
+    ^this.primitiveFailed
+  }
+
+  timeToNextBeat {
+    _LinkClock_TimeToNextBeat
+    ^this.primitiveFailed
+  }
+
+  nextTimeOnGrid { | quant = 1, phase = 0|
+    if (quant ==0) { ^this.beats + phase };
+    if (phase < 0) { phase = phase % quant };
+    ^roundUp(this.beats - (phase % quant), quant) + phase;
+  }
+}
