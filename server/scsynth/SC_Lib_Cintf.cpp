@@ -106,6 +106,7 @@ extern void Grain_Load(InterfaceTable *table);
 extern void Pan_Load(InterfaceTable *table);
 extern void Reverb_Load(InterfaceTable *table);
 extern void Trigger_Load(InterfaceTable *table);
+extern void Link_Load(InterfaceTable *table);
 extern void UnaryOp_Load(InterfaceTable *table);
 extern void DiskIO_Load(InterfaceTable *table);
 extern void Test_Load(InterfaceTable *table);
@@ -162,6 +163,7 @@ void initialize_library(const char *uGensPluginPath)
 	Pan_Load(&gInterfaceTable);
 	Reverb_Load(&gInterfaceTable);
 	Trigger_Load(&gInterfaceTable);
+	Link_Load(&gInterfaceTable);
 	UnaryOp_Load(&gInterfaceTable);
 	DiskIO_Load(&gInterfaceTable);
 	PhysicalModeling_Load(&gInterfaceTable);

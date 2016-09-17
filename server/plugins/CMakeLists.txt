@@ -35,6 +35,7 @@ set(plugin_sources
 	GendynUGens.cpp
 	GrainUGens.cpp
 	IOUGens.cpp
+	LinkUGens.cpp
 	LFUGens.cpp
 	MulAddUGens.cpp
 	NoiseUGens.cpp
@@ -309,3 +310,8 @@ set_property(TARGET ${plugins} ${supernova_plugins} PROPERTY FOLDER UnitGenerato
 
 set(plugins "${plugins}" PARENT_SCOPE)
 set(supernova_plugins "${supernova_plugins}" PARENT_SCOPE)
+
+#AbletonLink
+
+include(../../external_libraries/link/AbletonLinkConfig.cmake)
+target_link_libraries(LinkUGens Ableton::Link)
