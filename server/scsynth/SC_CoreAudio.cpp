@@ -1313,6 +1313,8 @@ void SC_CoreAudioDriver::Run(const AudioBufferList* inInputData,
 	int64 systemTimeBefore = AudioGetCurrentHostTime();
 	World *world = mWorld;
 
+	world->mAudioHostTime = systemTimeBefore;
+
 	try {
 		int numSamplesPerCallback = NumSamplesPerCallback();
 		mOSCbuftime = oscTime;
@@ -1347,6 +1349,8 @@ void SC_CoreAudioDriver::Run(const AudioBufferList* inInputData,
 		double oscToSamples = mOSCtoSamples;
 
 		int bufFramePos = 0;
+
+		world->mBufFramePos = 0;
 
 		for (int i = 0; i < numBufs; ++i, world->mBufCounter++, bufFramePos += bufFrames) {
 			int32 bufCounter = world->mBufCounter;
@@ -1404,6 +1408,8 @@ void SC_CoreAudioDriver::Run(const AudioBufferList* inInputData,
 			world->mSubsampleOffset = 0.f;
 
 			World_Run(world);
+
+			world->mBufFramePos += bufFrames;
 
 			// interleave output
 			AudioBuffer* outOutputDataBuffers = outOutputData->mBuffers;

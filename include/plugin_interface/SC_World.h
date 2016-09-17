@@ -75,6 +75,9 @@ struct World
 
 	Rate mFullRate, mBufRate;
 
+	int64 mAudioHostTime;
+	uint32 mBufFramePos;
+
 	uint32 mNumRGens;
 	RGen *mRGen;
 
